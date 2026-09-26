@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DAMGUARD — Live Reservoir Traffic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ LOGIN (particle wave retained) ============ -->
+<div id="login" class="login-wrap">
+  <canvas id="waves"></canvas>
+  <div class="fr-card login-card">
+    <div class="login-left">
+      <div class="brand-row">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z" stroke="#F5BB00" stroke-width="1.6"/><path d="M7 12c1.5 1.2 3.5 1.2 5 0s3.5-1.2 5 0" stroke="#F5BB00" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="brand-name">DAM<span class="y">GUARD</span></span>
+      </div>
+      <div class="brand-sub">Live Reservoir Traffic • National Network</div>
+      <p class="login-tag">Real-time geospatial tracking of India's major reservoirs — satellite water extent, cascade surge routing and edge-AI structural inspection in one operational picture.</p>
+      <ul class="login-status">
+        <li><span class="live-chip">LIVE</span> Satellite telemetry — 25 s poll</li>
+        <li><span class="live-chip">LIVE</span> Cascade surge engine — armed</li>
+        <li><span class="live-chip">LIVE</span> 75 reservoirs under tracking</li>
+        <li><span class="live-chip warn-chip">ADV</span> 2 basins under advisory</li>
+      </ul>
+      <div class="login-foot">v2.4.1 • BUILD 8f3c21 • © 2026 DEPT. OF WATER RESOURCES INTELLIGENCE</div>
+    </div>
+    <div class="login-right">
+      <h1>Operator Sign-In</h1>
+      <p class="muted small">Restricted system. Sessions are audited.</p>
+      <label class="field">Operator ID<input id="user" autocomplete="username" spellcheck="false"></label>
+      <label class="field">Passphrase<input id="pass" type="password"></label>
+      <button id="signin" class="btn btn-yellow full">Authenticate</button>
+      <div id="login-err" class="login-err"></div>
+      <p class="tiny muted center">Demo credentials: admin / damguard2026</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" hidden>
+  <header class="topbar">
+    <button id="menu-btn" class="icon-btn" title="Toggle panels">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <div class="brand-row">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z" stroke="#F5BB00" stroke-width="1.6"/><path d="M7 12c1.5 1.2 3.5 1.2 5 0s3.5-1.2 5 0" stroke="#F5BB00" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span class="brand-name">DAM<span class="y">GUARD</span></span>
+    </div>
+    <nav class="nav-tabs">
+      <button class="nav-btn active" data-view="overview">Network</button>
+      <button class="nav-btn" data-view="dam">Intelligence</button>
+      <button class="nav-btn" data-view="inspect">Inspection</button>
+    </nav>
+    <div class="search-wrap">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa5a9" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="dam-search" placeholder="Find dams, states and more" spellcheck="false">
+    </div>
+    <div class="top-right">
+      <span id="crumb" class="crumb"></span>
+      <span class="dot"></span><span class="link-label">LIVE</span>
+      <span id="clock" class="mono"></span>
+      <span class="op-chip">admin</span>
+      <button id="signout" class="btn btn-ghost small">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <main>
+      <!-- ===== OVERVIEW ===== -->
+      <section id="view-overview" class="view view-map">
+        <input type="checkbox" id="reg-toggle" class="reg-input">
+        <div class="stage">
+          <div id="map"></div>
+
+          <div class="panels-left" id="panels-left">
+            <div class="fr-card">
+              <div class="fr-head">Priority Alerts <span class="live-chip">LIVE</span></div>
+              <div id="alerts" class="alerts"></div>
+            </div>
+            <div class="fr-card">
+              <div class="fr-head">Most Stressed Reservoirs <span class="live-chip">LIVE</span></div>
+              <div id="stressed" class="stressed"></div>
+            </div>
+            <div class="fr-card">
+              <div class="fr-tabs">
+                <button class="fr-tab active" data-filter="ALL">All Dams</button>
+                <button class="fr-tab" data-filter="CRITICAL">Critical</button>
+                <button class="fr-tab" data-filter="WARNING">Warning</button>
+              </div>
+              <div id="dam-list" class="dam-list"></div>
+            </div>
+          </div>
+
+          <div class="panels-right">
+            <div class="fr-card"><div id="kpis" class="kpis-row"></div></div>
+            <div class="fr-card legend-card">
+              <div class="lg-row"><i class="led crit"></i>Critical — release imminent</div>
+              <div class="lg-row"><i class="led warn"></i>Warning — rapid inflow</div>
+              <div class="lg-row"><i class="led ok"></i>Safe — stable</div>
+              <div class="lg-row"><span class="seg">
+                <button id="tile-dark" class="seg-btn active">Chart</button>
+                <button id="tile-sat" class="seg-btn">Satellite</button>
+              </span><span id="poll-tag" class="mono tiny muted">POLL 25s</span></div>
+            </div>
+          </div>
+
+          <div class="ticker"><div class="ticker-track" id="ticker-track"></div></div>
+        </div>
+
+        <label for="reg-toggle" class="blue-pill">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h16M4 15h16"/><circle cx="9" cy="9" r="2" fill="currentColor"/><circle cx="15" cy="15" r="2" fill="currentColor"/></svg>
+          Dam Registry
+        </label>
+
+        <div class="toolbar">
+          <label for="reg-toggle" class="tb-btn">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M10 4v16"/></svg>Registry</label>
+          <button id="tb-tiles" class="tb-btn">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.6 3 14.4 0 18M12 3c-3 3.6-3 14.4 0 18"/></svg>Tiles</button>
+          <button id="tb-pause" class="tb-btn">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>Live</button>
+          <button id="tb-inspect" class="tb-btn">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg>Inspect</button>
+        </div>
+
+        <div class="sheet">
+          <table class="tbl">
+            <thead><tr><th>Dam</th><th>State</th><th>River</th><th class="r">Live %</th><th class="r">48h Peak %</th><th class="r">Cascade Δ</th><th>Status</th></tr></thead>
+            <tbody id="dam-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== DAM INTELLIGENCE ===== -->
+      <section id="view-dam" class="view view-page">
+        <div class="dam-top">
+          <button class="btn btn-ghost" id="back">← Network</button>
+          <h2 id="dam-title"></h2>
+          <span id="dam-pill" class="chip"></span>
+        </div>
+        <div class="fr-card statbar-card"><div id="dam-kpis" class="kpis-row statbar"></div></div>
+        <div class="grid-2">
+          <div class="fr-card">
+            <div class="card-head">
+              <span class="card-title">Reservoir Level — Observed vs ML Forecast</span>
+              <button id="dl-report" class="btn btn-blue small">Export Report</button>
+            </div>
+            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <div class="card-note">Blue = Sentinel-1/2 derived surface • Red = ML forecast • Dashed = FRL spill threshold (95%)</div>
+          </div>
+          <div class="fr-card" id="cascade-card">
+            <div class="card-head">
+              <span class="card-title">Cascade Routing — River Network</span>
+              <span style="display:flex;gap:8px">
+                <button id="sim-breach" class="btn small danger">Simulate Breach</button>
+                <button id="sim-reset" class="btn btn-ghost small">Reset All</button>
+              </span>
+            </div>
+            <div id="cascade-body" style="padding:14px"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== STRUCTURAL INSPECTION ===== -->
+      <section id="view-inspect" class="view view-page narrow">
+        <h2 class="view-title">Edge-AI Structural Inspection</h2>
+        <p class="muted small">Upload concrete surface imagery from drone sweep. Gaussian smoothing + Canny edge-density inference runs server-side.</p>
+        <label class="drop fr-card" id="drop">
+          <input type="file" id="file" accept="image/*" hidden>
+          <div class="drop-inner">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#F5BB00" stroke-width="1.6"><path d="M12 16V6m0 0l-4 4m4-4l4 4"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+            <strong>Drop image or browse files</strong>
+            <span class="muted tiny">JPG / PNG • inference on local server</span>
+            <span class="blue-pill small-pill">Browse Files</span>
+          </div>
+        </label>
+        <div id="inspect-result" hidden>
+          <div class="grid-2 eq">
+            <div class="fr-card"><div class="card-head"><span class="card-title">Raw Feed</span></div><img id="img-raw" class="feed" alt="raw"></div>
+            <div class="fr-card"><div class="card-head"><span class="card-title">Edge-Density Feature Map</span></div><img id="img-edge" class="feed" alt="edges"></div>
+          </div>
+          <div id="verdict" class="verdict fr-card"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
