@@ -1,0 +1,1126 @@
+DAMGUARD COMPLETE SOURCE BUNDLE - split using the FILE_START / FILE_END markers below
+
+<<<FILE_START: main.py>>>
+
+import base64
+import math
+import time
+import zlib
+from collections import defaultdict, deque
+from datetime import datetime, timedelta
+
+import cv2
+import numpy as np
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.responses import PlainTextResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sklearn.linear_model import LinearRegression
+
+APP_VERSION = "2.4.1"
+TOKEN = "dg-2026-operator-token"
+
+# name: (state, river, [lat, lon], live_level_%, rise_per_day_%)
+DAMS = {
+    "Idukki":            ("Kerala",        "Periyar",     [9.845, 76.926],  94.2, 0.90),
+    "Nagarjuna Sagar":   ("Telangana",     "Krishna",     [16.582, 79.306], 91.5, 0.80),
+    "Srisailam":         ("Telangana",     "Krishna",     [16.083, 78.833], 93.0, 0.70),
+    "Mettur":            ("Tamil Nadu",    "Kaveri",      [11.783, 77.750], 88.5, 0.60),
+    "Mullaperiyar":      ("Kerala",        "Periyar",     [9.528, 77.150],  89.0, 0.30),
+    "Hirakud":           ("Odisha",        "Mahanadi",    [21.500, 83.870], 86.5, 0.40),
+    "Almatti":           ("Karnataka",     "Krishna",     [16.300, 75.880], 87.0, 0.50),
+    "Tehri":             ("Uttarakhand",   "Bhagirathi",  [30.385, 78.490], 62.0, 0.10),
+    "Bhakra Nangal":     ("Himachal",      "Sutlej",      [31.410, 76.436], 55.0, 0.20),
+    "Sardar Sarovar":    ("Gujarat",       "Narmada",     [21.828, 73.750], 70.0, 0.20),
+    "Krishna Raja Sagara":("Karnataka",    "Kaveri",      [12.420, 76.550], 75.0, 0.30),
+    "Tungabhadra":       ("Karnataka",     "Tungabhadra", [15.270, 76.330], 68.0, 0.20),
+    "Koyna":             ("Maharashtra",   "Koyna",       [17.350, 73.750], 58.0, 0.10),
+    "Ukai":              ("Gujarat",       "Tapi",        [21.200, 73.600], 64.0, 0.20),
+    "Kakrapar":          ("Gujarat",       "Tapi",        [21.230, 73.350], 63.0, 0.20),
+    "Farakka":           ("West Bengal",   "Ganga",       [24.800, 87.900], 52.0, 0.10),
+    "Maithon":           ("Jharkhand",     "Barakar",     [23.780, 86.900], 60.0, 0.15),
+    "Panchet":           ("Jharkhand",     "Barakar",     [23.750, 86.970], 57.0, 0.10),
+    "Bisalpur":          ("Rajasthan",     "Banas",       [25.980, 75.080], 45.0, 0.05),
+    "Rana Pratap Sagar": ("Rajasthan",     "Chambal",     [24.920, 75.630], 49.0, 0.10),
+    "Pulichintala":      ("Andhra Pradesh","Krishna",     [16.300, 79.900], 66.0, 0.25),
+    "Sriram Sagar":      ("Telangana",     "Godavari",    [18.900, 78.100], 61.0, 0.20),
+    "Salal":             ("J&K",           "Chenab",      [33.080, 74.780], 44.0, 0.05),
+    "Chamera":           ("Himachal",      "Ravi",        [32.550, 76.030], 51.0, 0.10),
+    "Pong":              ("Himachal",      "Beas",        [31.950, 75.930], 58.0, 0.15),
+    "Pandoh":            ("Himachal",      "Beas",        [32.000, 77.070], 47.0, 0.10),
+    "Ranjit Sagar":      ("Punjab",        "Ravi",        [32.050, 75.030], 53.0, 0.10),
+    "Baglihar":          ("J&K",           "Chenab",      [33.060, 75.480], 46.0, 0.10),
+    "Dul Hasti":         ("J&K",           "Chenab",      [33.300, 75.600], 42.0, 0.05),
+    "Gandhi Sagar":      ("Madhya Pradesh","Chambal",     [24.780, 75.450], 56.0, 0.15),
+    "Jawahar Sagar":     ("Rajasthan",     "Chambal",     [25.050, 75.630], 50.0, 0.10),
+    "Jakham":            ("Rajasthan",     "Jakham",      [24.050, 74.350], 41.0, 0.05),
+    "Bargi":             ("Madhya Pradesh","Narmada",     [23.030, 79.870], 63.0, 0.20),
+    "Indirasagar":       ("Madhya Pradesh","Narmada",     [22.020, 76.530], 69.0, 0.20),
+    "Omkareshwar":       ("Madhya Pradesh","Narmada",     [22.240, 76.150], 66.0, 0.20),
+    "Bansagar":          ("Madhya Pradesh","Son",         [24.050, 81.850], 59.0, 0.15),
+    "Dharoi":            ("Gujarat",       "Sabarmati",   [23.980, 72.680], 48.0, 0.10),
+    "Kadana":            ("Gujarat",       "Mahi",        [22.980, 73.780], 54.0, 0.10),
+    "Khadakwasna":       ("Maharashtra",   "Mula-Mutha",  [18.450, 73.750], 61.0, 0.15),
+    "Jayakwadi":         ("Maharashtra",   "Godavari",    [19.480, 75.030], 57.0, 0.15),
+    "Ujjani":            ("Maharashtra",   "Bhima",       [18.050, 75.100], 46.0, 0.10),
+    "Radhanagari":       ("Maharashtra",   "Bhogawa",     [16.400, 74.000], 64.0, 0.15),
+    "Gosekhurd":         ("Maharashtra",   "Wainganga",   [20.900, 79.630], 52.0, 0.10),
+    "Nizam Sagar":       ("Telangana",     "Manjira",     [18.680, 77.680], 44.0, 0.10),
+    "Somashila":         ("Andhra Pradesh","Penna",       [16.030, 79.050], 58.0, 0.15),
+    "Narayanapura":      ("Karnataka",     "Krishna",     [16.450, 75.600], 62.0, 0.15),
+    "Linganamakki":      ("Karnataka",     "Sharavathi",  [14.050, 75.050], 67.0, 0.15),
+    "Bhadra":            ("Karnataka",     "Bhadra",      [13.750, 75.600], 71.0, 0.20),
+    "Malaprabha":        ("Karnataka",     "Malaprabha",  [15.750, 75.350], 55.0, 0.10),
+    "Kabini":            ("Karnataka",     "Kabini",      [11.980, 76.980], 69.0, 0.20),
+    "Bhavanisagar":      ("Tamil Nadu",    "Bhavani",     [11.470, 77.220], 62.0, 0.15),
+    "Amaravathi":        ("Tamil Nadu",    "Amaravathi",  [10.550, 77.550], 51.0, 0.10),
+    "Aliyar":            ("Tamil Nadu",    "Aliyar",      [10.120, 76.930], 66.0, 0.15),
+    "Vaigai":            ("Tamil Nadu",    "Vaigai",      [10.170, 78.120], 43.0, 0.05),
+    "Parambikulam":      ("Kerala",        "Parambikulam",[10.350, 76.870], 72.0, 0.15),
+    "Malampuzha":        ("Kerala",        "Malampuzha",  [10.850, 76.680], 68.0, 0.15),
+    "Banasura Sagar":    ("Kerala",        "Kabini",      [11.680, 76.050], 74.0, 0.20),
+    "Peechi":            ("Kerala",        "Manali",      [10.520, 76.420], 65.0, 0.15),
+    "Indravati":         ("Odisha",        "Indravati",   [19.030, 82.050], 56.0, 0.15),
+    "Balimela":          ("Odisha",        "Machkund",    [18.030, 81.780], 60.0, 0.15),
+    "Kolab":             ("Odisha",        "Kolab",       [18.550, 82.050], 53.0, 0.10),
+    "Tilaiya":           ("Jharkhand",     "Barakar",     [23.920, 86.680], 49.0, 0.10),
+    "Konar":             ("Jharkhand",     "Konar",       [23.680, 86.050], 47.0, 0.10),
+    "Massanjore":        ("Jharkhand",     "Mayurakshi",  [24.050, 87.250], 51.0, 0.10),
+    "Rihand":            ("Uttar Pradesh", "Rihand",      [24.250, 82.700], 66.0, 0.20),
+    "Matatila":          ("Uttar Pradesh", "Betwa",       [24.500, 78.930], 48.0, 0.10),
+    "Rajghat":           ("Uttar Pradesh", "Betwa",       [24.950, 78.550], 42.0, 0.05),
+    "Gangrel":           ("Chhattisgarh",  "Mahanadi",    [20.450, 81.050], 57.0, 0.15),
+    "Umiam":             ("Meghalaya",     "Umiam",       [25.680, 91.920], 70.0, 0.20),
+    "Kopili":            ("Assam",         "Kopili",      [25.000, 92.600], 54.0, 0.10),
+    "Mithi":             ("Tripura",       "Mithi",       [23.800, 91.900], 46.0, 0.10),
+    "Chimmini":          ("Kerala",        "Chimmini",    [10.650, 76.550], 63.0, 0.15),
+}
+
+# ---------- RIVER CASCADE GRAPH: (upstream, downstream, link/river label) ----------
+CASCADE = [
+    ("Salal", "Baglihar", "Chenab"),
+    ("Baglihar", "Dul Hasti", "Chenab"),
+    ("Chamera", "Ranjit Sagar", "Ravi"),
+    ("Pandoh", "Pong", "Beas"),
+    ("Gandhi Sagar", "Rana Pratap Sagar", "Chambal"),
+    ("Rana Pratap Sagar", "Jawahar Sagar", "Chambal"),
+    ("Indirasagar", "Omkareshwar", "Narmada"),
+    ("Omkareshwar", "Sardar Sarovar", "Narmada"),
+    ("Ukai", "Kakrapar", "Tapi"),
+    ("Matatila", "Rajghat", "Betwa"),
+    ("Tilaiya", "Maithon", "Barakar"),
+    ("Maithon", "Panchet", "Barakar"),
+    ("Kabini", "Krishna Raja Sagara", "Kabini-Kaveri"),
+    ("Krishna Raja Sagara", "Mettur", "Kaveri"),
+    ("Mullaperiyar", "Idukki", "Periyar"),
+    ("Bhadra", "Tungabhadra", "Bhadra"),
+    ("Tungabhadra", "Srisailam", "Tungabhadra-Krishna"),
+    ("Malaprabha", "Almatti", "Malaprabha-Krishna"),
+    ("Koyna", "Almatti", "Koyna-Krishna"),
+    ("Almatti", "Narayanapura", "Krishna"),
+    ("Narayanapura", "Srisailam", "Krishna"),
+    ("Srisailam", "Nagarjuna Sagar", "Krishna"),
+    ("Nagarjuna Sagar", "Pulichintala", "Krishna"),
+    ("Parambikulam", "Aliyar", "Anaimalai tunnel"),
+]
+SURGE_BASE = 22.0     # % level surge injected into immediate downstream reservoir
+HOP_COEFF = 0.65      # attenuation per hop
+RAMP_SEC = 90.0       # flood wave ramp time
+
+DOWN = defaultdict(list)
+UP = defaultdict(list)
+for _u, _d, _r in CASCADE:
+    DOWN[_u].append((_d, _r))
+    UP[_d].append((_u, _r))
+
+BREACHED = {}   # name -> breach timestamp
+
+
+def cascade_state():
+    surge = {n: 0.0 for n in DAMS}
+    sources = {n: [] for n in DAMS}
+    active = []
+    for b, ts in BREACHED.items():
+        if b not in DAMS:
+            continue
+        ramp = min(1.0, (time.time() - ts) / RAMP_SEC)
+        seen = {b}
+        dq = deque([(b, ramp)])
+        while dq:
+            node, f = dq.popleft()
+            for dn, _r in DOWN[node]:
+                nf = f * HOP_COEFF
+                if nf < 0.04:
+                    continue
+                surge[dn] += SURGE_BASE * nf
+                if b not in sources[dn]:
+                    sources[dn].append(b)
+                active.append([node, dn])
+                if dn not in seen:
+                    seen.add(dn)
+                    dq.append((dn, nf))
+    return surge, sources, active
+
+
+def _series(name: str) -> dict:
+    state, river, coords, level, slope = DAMS[name]
+    seed = zlib.crc32(name.encode())
+    rng = np.random.default_rng(seed)
+    phase = (seed % 628) / 100.0
+    live = level + 0.5 * math.sin(time.time() / 38.2 + phase)   # slow live drift
+    days = 60
+    now = datetime.now()
+    dates = [now - timedelta(days=i) for i in range(days, 0, -1)]
+    hist = np.clip(live - slope * np.arange(days, 0, -1) + rng.normal(0, 0.6, days), 0, 100)
+    model = LinearRegression().fit(np.arange(days).reshape(-1, 1), hist)
+    fut_dates = [dates[-1] + timedelta(days=i) for i in range(1, 6)]
+    fut = np.clip(model.predict(np.arange(days, days + 5).reshape(-1, 1)), 0, 105)
+    peak = float(fut.max())
+    status = "CRITICAL" if peak >= 95 else ("WARNING" if peak >= 88 else "SAFE")
+    return {
+        "state": state, "river": river, "coords": coords,
+        "level": round(float(live), 1), "slope": round(float(slope), 2),
+        "peak": round(peak, 1), "status": status,
+        "history": [{"t": d.strftime("%Y-%m-%d"), "v": round(float(v), 2)} for d, v in zip(dates, hist)],
+        "forecast": [{"t": d.strftime("%Y-%m-%d"), "v": round(float(v), 2)} for d, v in zip(fut_dates, fut)],
+        "last_pass": (now - timedelta(hours=4)).strftime("%H:%M IST"),
+    }
+
+
+def _enrich(name, surge_map, src_map):
+    s = _series(name)
+    sg = surge_map.get(name, 0.0)
+    level = round(s["level"] + sg, 1)
+    peak = round(s["peak"] + sg, 1)
+    status = "CRITICAL" if peak >= 95 else ("WARNING" if peak >= 88 else "SAFE")
+    out = dict(s)
+    out.update({"name": name, "level": level, "peak": peak, "status": status,
+                "surge": round(sg, 1), "inflow_from": src_map.get(name, []),
+                "breached": name in BREACHED})
+    return out
+
+
+app = FastAPI(title="AI Dam Guard API", version=APP_VERSION)
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+def auth(x_auth: str = Header(default=None)):
+    if x_auth != TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "version": APP_VERSION, "time": datetime.now().isoformat()}
+
+
+@app.post("/api/login")
+def login(body: LoginBody):
+    if body.username == "admin" and body.password == "damguard2026":
+        return {"token": TOKEN, "operator": "admin", "role": "National Controller"}
+    raise HTTPException(status_code=401, detail="Invalid credentials")
+
+
+@app.get("/api/overview", dependencies=[Depends(auth)])
+def overview():
+    surge_map, src_map, active = cascade_state()
+    dams = []
+    for n in DAMS:
+        e = _enrich(n, surge_map, src_map)
+        dams.append({k: e[k] for k in ("name", "state", "river", "coords",
+                                       "level", "peak", "status", "surge", "inflow_from", "breached")})
+    crit = sum(1 for d in dams if d["status"] == "CRITICAL")
+    warn = sum(1 for d in dams if d["status"] == "WARNING")
+    safe = sum(1 for d in dams if d["status"] == "SAFE")
+    avg = round(sum(d["level"] for d in dams) / len(dams), 1)
+    alerts = [d for d in dams if d["status"] != "SAFE" or d["breached"]]
+    alerts.sort(key=lambda d: d["peak"], reverse=True)
+    return {"generated": datetime.now().isoformat(),
+            "kpi": {"monitored": len(dams), "critical": crit, "warning": warn, "safe": safe, "avg": avg},
+            "dams": dams, "alerts": alerts,
+            "edges": [[u, d] for u, d, _ in CASCADE],
+            "active_edges": active,
+            "breached": sorted(BREACHED.keys())}
+
+
+@app.get("/api/dam/{name}", dependencies=[Depends(auth)])
+def dam_detail(name: str):
+    if name not in DAMS:
+        raise HTTPException(status_code=404, detail="Dam not in registry")
+    surge_map, src_map, _ = cascade_state()
+    e = _enrich(name, surge_map, src_map)
+    proj = []
+    seen = {name}
+    dq = deque([(name, 1.0, 0)])
+    while dq:
+        node, f, hop = dq.popleft()
+        for dn, r in DOWN[node]:
+            nf = f * HOP_COEFF
+            if nf < 0.04:
+                continue
+            base = _series(dn)["level"] + surge_map.get(dn, 0.0)
+            add = 0.0 if name in BREACHED else SURGE_BASE * nf
+            proj.append({"name": dn, "river": r, "hop": hop + 1,
+                         "projected": round(min(100.0, base + add), 1)})
+            if dn not in seen:
+                seen.add(dn)
+                dq.append((dn, nf, hop + 1))
+    e["cascade"] = {"upstream": [{"name": u, "river": r} for u, r in UP[name]],
+                    "downstream": proj}
+    return e
+
+
+@app.get("/api/report/{name}", dependencies=[Depends(auth)])
+def dam_report(name: str):
+    if name not in DAMS:
+        raise HTTPException(status_code=404, detail="Dam not in registry")
+    s = _series(name)
+    rec = {"CRITICAL": "Immediate downstream alert & controlled gate release planning.",
+           "WARNING": "Continuous monitoring, 6-hourly satellite revisit.",
+           "SAFE": "Routine monitoring."}[s["status"]]
+    text = (f"AI DAM GUARD — RISK REPORT\nDam: {name} ({s['state']}, {s['river']} River)\n"
+            f"Generated: {datetime.now().strftime('%d-%m-%Y %H:%M')}\n"
+            f"Current Live Level: {s['level']}% of FRL\n48h Forecast Peak: {s['peak']}% of FRL\n"
+            f"24h Inflow Trend: +{s['slope']}%/day\nRisk Status: {s['status']}\nRecommendation: {rec}\n")
+    return PlainTextResponse(text, headers={"Content-Disposition": f'attachment; filename="{name.replace(" ", "_")}_RiskReport.txt"'})
+
+
+@app.post("/api/inspect", dependencies=[Depends(auth)])
+async def inspect(file: UploadFile = File(...)):
+    data = await file.read()
+    gray = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if gray is None:
+        raise HTTPException(status_code=400, detail="Unreadable image")
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), 50, 150)
+    density = float((np.sum(edges > 0) / edges.size) * 100)
+    cracked = bool(density > 4.5)
+    _, enc = cv2.imencode(".png", edges)
+    return {"cracked": cracked, "density": round(density, 2),
+            "probability": round(min(99.4, 90 + density) if cracked else max(0.6, density), 1),
+            "threshold": 4.5, "edge_map": base64.b64encode(enc).decode()}
+
+
+@app.post("/api/sim/breach/{name}", dependencies=[Depends(auth)])
+def sim_breach(name: str):
+    if name not in DAMS:
+        raise HTTPException(status_code=404, detail="Dam not in registry")
+    BREACHED[name] = time.time()
+    return {"ok": True, "breached": sorted(BREACHED.keys())}
+
+
+@app.post("/api/sim/reset", dependencies=[Depends(auth)])
+def sim_reset():
+    BREACHED.clear()
+    return {"ok": True}
+
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
+
+<<<FILE_END: main.py>>>
+
+
+<<<FILE_START: requirements.txt>>>
+
+fastapi
+uvicorn[standard]
+python-multipart
+numpy
+scikit-learn
+opencv-python-headless
+
+<<<FILE_END: requirements.txt>>>
+
+
+<<<FILE_START: static/index.html>>>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DAMGUARD — Live Reservoir Traffic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ============ LOGIN (particle wave retained) ============ -->
+<div id="login" class="login-wrap">
+  <canvas id="waves"></canvas>
+  <div class="fr-card login-card">
+    <div class="login-left">
+      <div class="brand-row">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z" stroke="#F5BB00" stroke-width="1.6"/><path d="M7 12c1.5 1.2 3.5 1.2 5 0s3.5-1.2 5 0" stroke="#F5BB00" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span class="brand-name">DAM<span class="y">GUARD</span></span>
+      </div>
+      <div class="brand-sub">Live Reservoir Traffic • National Network</div>
+      <p class="login-tag">Real-time geospatial tracking of India's major reservoirs — satellite water extent, cascade surge routing and edge-AI structural inspection in one operational picture.</p>
+      <ul class="login-status">
+        <li><span class="live-chip">LIVE</span> Satellite telemetry — 25 s poll</li>
+        <li><span class="live-chip">LIVE</span> Cascade surge engine — armed</li>
+        <li><span class="live-chip">LIVE</span> 75 reservoirs under tracking</li>
+        <li><span class="live-chip warn-chip">ADV</span> 2 basins under advisory</li>
+      </ul>
+      <div class="login-foot">v2.4.1 • BUILD 8f3c21 • © 2026 DEPT. OF WATER RESOURCES INTELLIGENCE</div>
+    </div>
+    <div class="login-right">
+      <h1>Operator Sign-In</h1>
+      <p class="muted small">Restricted system. Sessions are audited.</p>
+      <label class="field">Operator ID<input id="user" autocomplete="username" spellcheck="false"></label>
+      <label class="field">Passphrase<input id="pass" type="password"></label>
+      <button id="signin" class="btn btn-yellow full">Authenticate</button>
+      <div id="login-err" class="login-err"></div>
+      <p class="tiny muted center">Demo credentials: admin / damguard2026</p>
+    </div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" hidden>
+  <header class="topbar">
+    <button id="menu-btn" class="icon-btn" title="Toggle panels">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+    </button>
+    <div class="brand-row">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z" stroke="#F5BB00" stroke-width="1.6"/><path d="M7 12c1.5 1.2 3.5 1.2 5 0s3.5-1.2 5 0" stroke="#F5BB00" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <span class="brand-name">DAM<span class="y">GUARD</span></span>
+    </div>
+    <nav class="nav-tabs">
+      <button class="nav-btn active" data-view="overview">Network</button>
+      <button class="nav-btn" data-view="dam">Intelligence</button>
+      <button class="nav-btn" data-view="inspect">Inspection</button>
+    </nav>
+    <div class="search-wrap">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa5a9" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <input id="dam-search" placeholder="Find dams, states and more" spellcheck="false">
+    </div>
+    <div class="top-right">
+      <span id="crumb" class="crumb"></span>
+      <span class="dot"></span><span class="link-label">LIVE</span>
+      <span id="clock" class="mono"></span>
+      <span class="op-chip">admin</span>
+      <button id="signout" class="btn btn-ghost small">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <main>
+      <!-- ===== OVERVIEW ===== -->
+      <section id="view-overview" class="view view-map">
+        <input type="checkbox" id="reg-toggle" class="reg-input">
+        <div class="stage">
+          <div id="map"></div>
+
+          <div class="panels-left" id="panels-left">
+            <div class="fr-card">
+              <div class="fr-head">Priority Alerts <span class="live-chip">LIVE</span></div>
+              <div id="alerts" class="alerts"></div>
+            </div>
+            <div class="fr-card">
+              <div class="fr-head">Most Stressed Reservoirs <span class="live-chip">LIVE</span></div>
+              <div id="stressed" class="stressed"></div>
+            </div>
+            <div class="fr-card">
+              <div class="fr-tabs">
+                <button class="fr-tab active" data-filter="ALL">All Dams</button>
+                <button class="fr-tab" data-filter="CRITICAL">Critical</button>
+                <button class="fr-tab" data-filter="WARNING">Warning</button>
+              </div>
+              <div id="dam-list" class="dam-list"></div>
+            </div>
+          </div>
+
+          <div class="panels-right">
+            <div class="fr-card"><div id="kpis" class="kpis-row"></div></div>
+            <div class="fr-card legend-card">
+              <div class="lg-row"><i class="led crit"></i>Critical — release imminent</div>
+              <div class="lg-row"><i class="led warn"></i>Warning — rapid inflow</div>
+              <div class="lg-row"><i class="led ok"></i>Safe — stable</div>
+              <div class="lg-row"><span class="seg">
+                <button id="tile-dark" class="seg-btn active">Chart</button>
+                <button id="tile-sat" class="seg-btn">Satellite</button>
+              </span><span id="poll-tag" class="mono tiny muted">POLL 25s</span></div>
+            </div>
+          </div>
+
+          <div class="ticker"><div class="ticker-track" id="ticker-track"></div></div>
+        </div>
+
+        <label for="reg-toggle" class="blue-pill">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 9h16M4 15h16"/><circle cx="9" cy="9" r="2" fill="currentColor"/><circle cx="15" cy="15" r="2" fill="currentColor"/></svg>
+          Dam Registry
+        </label>
+
+        <div class="toolbar">
+          <label for="reg-toggle" class="tb-btn">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M10 4v16"/></svg>Registry</label>
+          <button id="tb-tiles" class="tb-btn">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.6 3 14.4 0 18M12 3c-3 3.6-3 14.4 0 18"/></svg>Tiles</button>
+          <button id="tb-pause" class="tb-btn">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>Live</button>
+          <button id="tb-inspect" class="tb-btn">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg>Inspect</button>
+        </div>
+
+        <div class="sheet">
+          <table class="tbl">
+            <thead><tr><th>Dam</th><th>State</th><th>River</th><th class="r">Live %</th><th class="r">48h Peak %</th><th class="r">Cascade Δ</th><th>Status</th></tr></thead>
+            <tbody id="dam-rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== DAM INTELLIGENCE ===== -->
+      <section id="view-dam" class="view view-page">
+        <div class="dam-top">
+          <button class="btn btn-ghost" id="back">← Network</button>
+          <h2 id="dam-title"></h2>
+          <span id="dam-pill" class="chip"></span>
+        </div>
+        <div class="fr-card statbar-card"><div id="dam-kpis" class="kpis-row statbar"></div></div>
+        <div class="grid-2">
+          <div class="fr-card">
+            <div class="card-head">
+              <span class="card-title">Reservoir Level — Observed vs ML Forecast</span>
+              <button id="dl-report" class="btn btn-blue small">Export Report</button>
+            </div>
+            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+            <div class="card-note">Blue = Sentinel-1/2 derived surface • Red = ML forecast • Dashed = FRL spill threshold (95%)</div>
+          </div>
+          <div class="fr-card" id="cascade-card">
+            <div class="card-head">
+              <span class="card-title">Cascade Routing — River Network</span>
+              <span style="display:flex;gap:8px">
+                <button id="sim-breach" class="btn small danger">Simulate Breach</button>
+                <button id="sim-reset" class="btn btn-ghost small">Reset All</button>
+              </span>
+            </div>
+            <div id="cascade-body" style="padding:14px"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== STRUCTURAL INSPECTION ===== -->
+      <section id="view-inspect" class="view view-page narrow">
+        <h2 class="view-title">Edge-AI Structural Inspection</h2>
+        <p class="muted small">Upload concrete surface imagery from drone sweep. Gaussian smoothing + Canny edge-density inference runs server-side.</p>
+        <label class="drop fr-card" id="drop">
+          <input type="file" id="file" accept="image/*" hidden>
+          <div class="drop-inner">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#F5BB00" stroke-width="1.6"><path d="M12 16V6m0 0l-4 4m4-4l4 4"/><path d="M4 16v3a1 1 0 001 1h14a1 1 0 001-1v-3"/></svg>
+            <strong>Drop image or browse files</strong>
+            <span class="muted tiny">JPG / PNG • inference on local server</span>
+            <span class="blue-pill small-pill">Browse Files</span>
+          </div>
+        </label>
+        <div id="inspect-result" hidden>
+          <div class="grid-2 eq">
+            <div class="fr-card"><div class="card-head"><span class="card-title">Raw Feed</span></div><img id="img-raw" class="feed" alt="raw"></div>
+            <div class="fr-card"><div class="card-head"><span class="card-title">Edge-Density Feature Map</span></div><img id="img-edge" class="feed" alt="edges"></div>
+          </div>
+          <div id="verdict" class="verdict fr-card"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
+
+<<<FILE_END: static/index.html>>>
+
+
+<<<FILE_START: static/styles.css>>>
+
+:root{
+  --bg:#14181A; --mapbg:#3F6A70; --card:#262B2E; --card2:#1F2426; --line:#333A3D;
+  --ink:#FFFFFF; --mut:#9AA5A9; --yellow:#F5BB00; --blue:#4A90D9; --green:#8DC63F;
+  --crit:#E74C3C; --warn:#F5A524; --ok:#2ECC71;
+  --mono:'JetBrains Mono',monospace; --body:'Roboto',sans-serif;
+  --ease:cubic-bezier(.25,.8,.3,1); --shadow:0 6px 18px rgba(0,0,0,.38);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+[hidden]{display:none !important}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14px;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+::selection{background:rgba(245,187,0,.3)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#3a4145;border-radius:6px}
+::-webkit-scrollbar-track{background:transparent}
+.mono{font-family:var(--mono)} .muted{color:var(--mut)} .small{font-size:12.5px} .tiny{font-size:10.5px}
+.center{text-align:center} .r{text-align:right} .y{color:var(--yellow)}
+
+/* ---------- MOTION ---------- */
+.rise{animation:riseIn .5s var(--ease) both}
+@keyframes riseIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.view-enter{animation:viewIn .38s var(--ease)}
+@keyframes viewIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.flash{animation:flashBg 1.1s ease}
+@keyframes flashBg{0%{background:rgba(245,187,0,.14)}100%{background:transparent}}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(141,198,63,.5)}70%{box-shadow:0 0 0 8px rgba(141,198,63,0)}100%{box-shadow:0 0 0 0 rgba(141,198,63,0)}}
+@keyframes mkpulse{0%{box-shadow:0 0 0 0 rgba(231,76,60,.55)}70%{box-shadow:0 0 0 15px rgba(231,76,60,0)}100%{box-shadow:0 0 0 0 rgba(231,76,60,0)}}
+@keyframes mkwarn{0%{box-shadow:0 0 0 0 rgba(245,165,36,.45)}70%{box-shadow:0 0 0 10px rgba(245,165,36,0)}100%{box-shadow:0 0 0 0 rgba(245,165,36,0)}}
+@keyframes dashflow{to{stroke-dashoffset:-16}}
+@keyframes tick{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+
+/* ---------- FR24 CARD ---------- */
+.fr-card{background:var(--card);border-radius:8px;box-shadow:var(--shadow);overflow:hidden}
+.live-chip{background:var(--yellow);color:#1C1C1C;font-size:9.5px;font-weight:700;letter-spacing:.08em;border-radius:3px;padding:2px 7px;margin-left:8px;vertical-align:1px}
+.warn-chip{background:var(--warn)}
+.led{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:7px}
+.led.ok{background:var(--ok)} .led.warn{background:var(--warn)} .led.crit{background:var(--crit)}
+.dot-o{width:8px;height:8px;border-radius:50%;background:var(--warn);display:inline-block;margin-right:6px}
+
+/* ---------- BUTTONS ---------- */
+.btn{border:1px solid var(--line);background:var(--card2);color:var(--ink);border-radius:6px;padding:9px 16px;font-family:var(--body);font-size:12px;font-weight:500;cursor:pointer;transition:transform .12s var(--ease),filter .15s,background .15s,border-color .15s}
+.btn:hover{filter:brightness(1.15);transform:translateY(-1px)}
+.btn:active{transform:scale(.97)}
+.btn-yellow{background:var(--yellow);border-color:var(--yellow);color:#1C1C1C;font-weight:700}
+.btn-blue{background:var(--blue);border-color:var(--blue);color:#fff}
+.btn-ghost{background:transparent}
+.btn.small{padding:6px 12px;font-size:11px}
+.btn.danger{border-color:rgba(231,76,60,.6);color:var(--crit);background:rgba(231,76,60,.1)}
+.full{width:100%;margin-top:18px}
+.blue-pill{position:fixed;left:50%;transform:translateX(-50%);bottom:104px;z-index:900;display:inline-flex;align-items:center;gap:8px;background:var(--blue);color:#fff;border:none;border-radius:999px;padding:11px 24px;font-size:13px;font-weight:500;cursor:pointer;box-shadow:var(--shadow);transition:filter .15s,transform .15s var(--ease)}
+.blue-pill:hover{filter:brightness(1.12);transform:translateX(-50%) translateY(-2px)}
+.small-pill{position:static;transform:none;padding:8px 18px;font-size:12px;margin-top:12px;pointer-events:none}
+.icon-btn{background:transparent;border:none;color:var(--mut);cursor:pointer;padding:6px;border-radius:6px;transition:.15s}
+.icon-btn:hover{color:var(--ink);background:var(--card)}
+
+/* ---------- LOGIN ---------- */
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;background:#101416}
+#waves{position:absolute;inset:0;width:100%;height:100%}
+.login-card{position:relative;z-index:2;width:800px;display:grid;grid-template-columns:1.15fr 1fr;animation:riseIn .7s var(--ease) both}
+.login-left{padding:38px 34px;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--card2)}
+.login-right{padding:38px 34px}
+.login-tag{color:var(--mut);font-size:13px;line-height:1.65;margin-top:16px}
+.login-status{list-style:none;margin-top:20px;display:flex;flex-direction:column;gap:11px;font-size:12px;color:var(--mut)}
+.login-foot{margin-top:auto;padding-top:24px;color:#5c686c;font-size:10px;letter-spacing:.1em}
+.login-card h1{font-size:24px;font-weight:700}
+.brand-row{display:flex;align-items:center;gap:10px}
+.brand-name{font-size:19px;font-weight:700;letter-spacing:.02em}
+.brand-sub{color:var(--mut);font-size:11px;margin-top:6px}
+.field{display:block;margin-top:14px;font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--mut)}
+.field input{width:100%;margin-top:6px;background:var(--card2);border:1px solid var(--line);border-radius:6px;padding:11px 12px;color:var(--ink);font-family:var(--mono);font-size:13px;outline:none;transition:border .18s,box-shadow .18s}
+.field input:focus{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(245,187,0,.15)}
+.login-err{color:var(--crit);font-size:12px;margin-top:10px;min-height:16px;font-family:var(--mono)}
+
+/* ---------- TOPBAR ---------- */
+.topbar{height:56px;display:flex;align-items:center;gap:16px;padding:0 16px;background:var(--card2);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:1000}
+.nav-tabs{display:flex;gap:4px}
+.nav-btn{background:transparent;border:none;color:var(--mut);font-size:13px;font-weight:500;cursor:pointer;padding:8px 12px;border-radius:6px;transition:.15s}
+.nav-btn:hover{color:var(--ink);background:var(--card)}
+.nav-btn.active{color:var(--yellow)}
+.search-wrap{flex:1;max-width:520px;margin:0 auto;display:flex;align-items:center;gap:9px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 14px;transition:border .18s,box-shadow .18s}
+.search-wrap:focus-within{border-color:var(--yellow);box-shadow:0 0 0 3px rgba(245,187,0,.12)}
+.search-wrap input{flex:1;background:transparent;border:none;outline:none;color:var(--ink);font-size:13px}
+.top-right{display:flex;align-items:center;gap:11px;color:var(--mut);font-size:11px}
+.crumb{color:#5c686c;font-size:11px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 1.4s infinite}
+#clock{font-family:var(--mono);color:var(--ink);font-size:12px}
+.op-chip{border:1px solid var(--line);border-radius:6px;padding:5px 11px;font-size:11px;color:var(--mut);background:var(--card)}
+
+/* ---------- SHELL / STAGE ---------- */
+.shell{height:calc(100vh - 56px)}
+main{height:100%;overflow:auto;position:relative}
+.view-map{height:100%}
+.view-page{padding:22px 26px 120px;display:flex;flex-direction:column;gap:16px;background:var(--bg)}
+.view-page.narrow{max-width:980px;margin:0 auto}
+.view-title{font-size:24px;font-weight:700}
+.stage{position:relative;height:100%;overflow:hidden;background:var(--mapbg)}
+#map{position:absolute;inset:0;background:var(--mapbg)}
+#map.teal .leaflet-tile{filter:sepia(1) hue-rotate(150deg) saturate(1.5) brightness(.88) contrast(.92)}
+
+/* ---------- FLOATING PANELS ---------- */
+.panels-left{position:absolute;top:12px;left:12px;width:322px;z-index:800;display:flex;flex-direction:column;gap:10px;max-height:calc(100% - 170px);transition:transform .35s var(--ease),opacity .3s}
+.panels-left.collapsed{transform:translateX(-115%);opacity:0;pointer-events:none}
+.panels-right{position:absolute;top:12px;right:12px;width:288px;z-index:800;display:flex;flex-direction:column;gap:10px}
+.fr-head{display:flex;align-items:center;padding:13px 14px;font-size:14px;font-weight:500;border-bottom:1px solid var(--line)}
+.alerts{overflow-y:auto;max-height:218px}
+.alert-item{padding:11px 14px;border-bottom:1px solid var(--line);border-left:3px solid var(--line);cursor:pointer;transition:background .15s,padding-left .15s}
+.alert-item:last-child{border-bottom:none}
+.alert-item:hover{background:var(--card2);padding-left:18px}
+.alert-item.crit{border-left-color:var(--crit)}
+.alert-item.warn{border-left-color:var(--warn)}
+.alert-head{display:flex;align-items:center;gap:9px}
+.alert-name{font-weight:500;font-size:13px}
+.alert-msg{color:var(--mut);font-size:11.5px;margin-top:4px;line-height:1.55}
+.stressed{padding:6px 0}
+.st-row{display:flex;align-items:center;gap:9px;padding:9px 14px;cursor:pointer;transition:background .15s}
+.st-row:hover{background:var(--card2)}
+.st-rank{color:var(--mut);font-size:12px;width:16px}
+.st-name{flex:1;font-size:13px;font-weight:500}
+.st-val{display:flex;align-items:center;font-size:12.5px}
+.fr-tabs{display:flex;border-bottom:1px solid var(--line)}
+.fr-tab{flex:1;background:transparent;border:none;border-bottom:2px solid transparent;color:var(--mut);font-size:12.5px;font-weight:500;padding:11px 6px;cursor:pointer;transition:.15s}
+.fr-tab:hover{color:var(--ink)}
+.fr-tab.active{color:var(--yellow);border-bottom-color:var(--yellow)}
+.dam-list{overflow-y:auto;max-height:216px;padding:4px 0}
+.sel-item{display:flex;justify-content:space-between;align-items:center;gap:8px;width:100%;text-align:left;background:transparent;border:none;padding:8px 14px;cursor:pointer;color:var(--ink);transition:background .15s}
+.sel-item:hover{background:var(--card2)}
+.sel-name{font-size:12.5px;font-weight:500;line-height:1.35}
+.sel-right{display:flex;align-items:center;gap:7px;flex:0 0 auto}
+.kpis-row{display:grid;grid-template-columns:1fr 1fr}
+.kpis-row .kpi{padding:11px 14px;border-bottom:1px solid var(--line);border-right:1px solid var(--line)}
+.kpis-row .kpi:nth-child(2n){border-right:none}
+.kpis-row .kpi:nth-last-child(-n+2){border-bottom:none}
+.kpis-row .kpi:last-child{grid-column:1 / -1;border-right:none}
+.kpi .v{font-size:20px;font-weight:700;line-height:1.2}
+.kpi .l{font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--mut);margin-top:2px}
+.legend-card{padding:12px 14px;display:flex;flex-direction:column;gap:9px}
+.lg-row{display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--mut)}
+.seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.seg-btn{background:transparent;border:none;color:var(--mut);font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:5px 11px;cursor:pointer;transition:.15s}
+.seg-btn.active{background:var(--yellow);color:#1C1C1C;font-weight:700}
+
+/* ---------- TICKER / TOOLBAR / SHEET ---------- */
+.ticker{position:absolute;left:0;right:0;bottom:0;height:32px;background:rgba(31,36,38,.96);border-top:1px solid var(--line);overflow:hidden;display:flex;align-items:center;z-index:801}
+.ticker-track{display:flex;gap:36px;width:max-content;padding:0 18px;animation:tick 55s linear infinite;font-size:11px;color:var(--mut);white-space:nowrap}
+.tk b{color:var(--ink);font-weight:500}
+.tk-mut{color:#5c686c}
+.toolbar{position:fixed;bottom:42px;left:50%;transform:translateX(-50%);z-index:900;display:flex;gap:2px;background:var(--card);border-radius:12px;padding:6px 8px;box-shadow:var(--shadow)}
+.tb-btn{display:flex;flex-direction:column;align-items:center;gap:4px;background:transparent;border:none;color:var(--mut);font-size:10.5px;padding:8px 16px;border-radius:8px;cursor:pointer;transition:.15s}
+.tb-btn:hover{background:var(--card2);color:var(--ink)}
+.tb-btn.active{color:var(--yellow)}
+.reg-input{display:none}
+.reg-input:checked ~ .toolbar .tb-btn:first-child{color:var(--yellow)}
+.sheet{position:fixed;left:0;right:0;bottom:0;max-height:44vh;overflow:auto;background:var(--card2);border-top:1px solid var(--line);transform:translateY(101%);transition:transform .5s var(--ease);z-index:899;box-shadow:0 -8px 24px rgba(0,0,0,.4)}
+.reg-input:checked ~ .sheet{transform:none}
+
+/* ---------- TABLE / CHIPS ---------- */
+.tbl{width:100%;border-collapse:collapse}
+.tbl th{font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);text-align:left;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--card2)}
+.tbl td{padding:9px 16px;border-bottom:1px solid var(--line);font-size:12.5px;transition:background .3s}
+.tbl td.num{font-family:var(--mono);text-align:right}
+.tbl tbody tr{cursor:pointer;transition:background .15s}
+.tbl tbody tr:hover{background:var(--card)}
+.chip{font-family:var(--mono);font-size:9.5px;font-weight:600;letter-spacing:.08em;padding:3px 8px;border-radius:3px;text-transform:uppercase}
+.chip.CRITICAL{background:rgba(231,76,60,.15);color:var(--crit);border:1px solid rgba(231,76,60,.5)}
+.chip.WARNING{background:rgba(245,165,36,.12);color:var(--warn);border:1px solid rgba(245,165,36,.5)}
+.chip.SAFE{background:rgba(46,204,113,.12);color:var(--ok);border:1px solid rgba(46,204,113,.5)}
+.chip.BREACH{background:rgba(255,255,255,.1);color:#fff;border:1px solid var(--crit);box-shadow:0 0 10px rgba(231,76,60,.4)}
+
+/* ---------- MARKERS / EDGES ---------- */
+.mk{border-radius:50%}
+.mk-safe{width:10px;height:10px;background:var(--ok);box-shadow:0 0 0 2px rgba(46,204,113,.3)}
+.mk-warn{width:13px;height:13px;background:var(--warn);animation:mkwarn 2.2s infinite}
+.mk-crit{width:15px;height:15px;background:var(--crit);animation:mkpulse 1.6s infinite}
+.mk-breach{width:17px;height:17px;background:#fff;border:3px solid var(--crit);animation:mkpulse 1s infinite}
+.flowline{animation:dashflow 1s linear infinite}
+
+/* ---------- DAM / INSPECT PAGES ---------- */
+.dam-top{display:flex;align-items:center;gap:16px}
+.dam-top h2{font-size:26px;font-weight:700}
+.statbar-card{padding:0}
+.statbar{display:flex}
+.statbar .kpi{flex:1;padding:13px 20px;border-right:1px solid var(--line);border-bottom:none}
+.statbar .kpi:last-child{border-right:none}
+.grid-2{display:grid;grid-template-columns:1.5fr 1fr;gap:14px}
+.grid-2.eq{grid-template-columns:1fr 1fr}
+.card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.card-title{font-size:13px;font-weight:500;color:var(--ink)}
+.card-note{padding:9px 16px;color:var(--mut);font-size:10.5px;border-top:1px solid var(--line)}
+.chart-wrap{height:330px;padding:14px}
+.drop{display:block;border:1.5px dashed #3a4145;padding:46px;text-align:center;cursor:pointer;transition:border-color .2s,transform .18s var(--ease)}
+.drop:hover{border-color:var(--yellow);transform:translateY(-2px)}
+.drop-inner{display:flex;flex-direction:column;gap:9px;align-items:center}
+.feed{width:100%;display:block;background:#000;max-height:360px;object-fit:contain;animation:riseIn .5s var(--ease) both}
+.verdict{margin-top:14px;padding:18px 20px;border-left:4px solid var(--line);animation:riseIn .5s var(--ease) both}
+.verdict.crit{border-left-color:var(--crit)}
+.verdict.ok{border-left-color:var(--ok)}
+.verdict h3{font-size:16px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;margin-bottom:8px}
+.verdict .stats{font-family:var(--mono);font-size:12.5px;color:var(--mut);line-height:1.8}
+
+/* ---------- TOAST / LEAFLET ---------- */
+#toast{position:fixed;right:20px;bottom:20px;background:var(--card);border-left:3px solid var(--yellow);border-radius:8px;padding:12px 18px;font-size:12px;color:var(--ink);opacity:0;transform:translateY(16px);transition:opacity .3s var(--ease),transform .3s var(--ease);z-index:2000;pointer-events:none;font-family:var(--mono);max-width:400px;box-shadow:var(--shadow)}
+#toast.show{opacity:1;transform:none}
+.leaflet-popup-content-wrapper{background:var(--card);color:var(--ink);border-radius:8px;font-family:var(--body);font-size:12px;box-shadow:var(--shadow)}
+.leaflet-popup-tip{background:var(--card)}
+.leaflet-bar a{background:var(--card);color:var(--ink);border-bottom:1px solid var(--line)}
+.leaflet-bar a:hover{background:var(--card2)}
+.leaflet-control-attribution{background:rgba(31,36,38,.8) !important;color:#5c686c !important;font-size:9px !important}
+.leaflet-control-attribution a{color:#7b888c !important}
+#sim-breach:disabled{opacity:.45;cursor:not-allowed;transform:none}
+@media (max-width:1100px){.grid-2{grid-template-columns:1fr}.panels-right{display:none}.panels-left{width:280px}}
+
+<<<FILE_END: static/styles.css>>>
+
+
+<<<FILE_START: static/app.js>>>
+
+const $ = (id) => document.getElementById(id);
+let TOKEN = sessionStorage.getItem('dg_token') || '';
+let map, tileLayer, markerGroup, edgeGroup, chart, overviewData = null, currentDam = null;
+let waveRAF = null, pollTimer = null, paused = false, tileKind = 'dark', LIST_FILTER = 'ALL';
+
+const TILES = {
+  dark: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', 'Esri Dark Gray'],
+  sat:  ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 'Esri World Imagery']
+};
+const STATUS_COLOR = { CRITICAL: '#E74C3C', WARNING: '#F5A524', SAFE: '#2ECC71', BREACH: '#FFFFFF' };
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({ 'X-Auth': TOKEN }, opts.headers || {});
+  const res = await fetch(path, Object.assign({}, opts, { headers }));
+  if (res.status === 401) { logout(); throw new Error('unauthorized'); }
+  if (!res.ok) throw new Error('API ' + res.status);
+  return res.json();
+}
+function logout() { sessionStorage.removeItem('dg_token'); TOKEN = ''; location.reload(); }
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 3000);
+}
+function haversine(a, b) {
+  const R = 6371, dLa = (b[0]-a[0])*Math.PI/180, dLo = (b[1]-a[1])*Math.PI/180;
+  const s = Math.sin(dLa/2)**2 + Math.cos(a[0]*Math.PI/180)*Math.cos(b[0]*Math.PI/180)*Math.sin(dLo/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+function countUp(el, target, suf, dur = 750) {
+  const from = parseFloat(el.dataset.cur || '0');
+  const t0 = performance.now();
+  function step(now) {
+    const p = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - p, 3);
+    const v = from + (target - from) * e;
+    el.textContent = (suf === '%') ? v.toFixed(1) + '%' : (Number.isInteger(target) ? Math.round(v) : v.toFixed(1));
+    if (p < 1) requestAnimationFrame(step); else el.dataset.cur = target;
+  }
+  requestAnimationFrame(step);
+}
+
+/* ---------- login particle wave (yellow, FR24 accent) ---------- */
+function startWaves() {
+  const c = $('waves'); if (!c) return;
+  const ctx = c.getContext('2d'); let t = 0;
+  const resize = () => { c.width = innerWidth; c.height = innerHeight; };
+  resize(); addEventListener('resize', resize);
+  const ROWS = 6, N = 110;
+  function frame() {
+    ctx.clearRect(0, 0, c.width, c.height);
+    for (let r = 0; r < ROWS; r++) for (let i = 0; i < N; i++) {
+      const x = i / (N - 1) * c.width;
+      const y = c.height * 0.52 + (r - ROWS / 2) * 74 + Math.sin(x * 0.0055 + t * 0.018 + r * 1.15) * (34 + r * 7);
+      const a = 0.10 + 0.30 * (0.5 + 0.5 * Math.sin(t * 0.025 + i * 0.14 + r * 0.9));
+      ctx.beginPath(); ctx.arc(x, y, 1.7, 0, 6.2832);
+      ctx.fillStyle = `rgba(245,187,0,${a.toFixed(3)})`; ctx.fill();
+    }
+    t++; waveRAF = requestAnimationFrame(frame);
+  }
+  frame();
+}
+function stopWaves() { if (waveRAF) cancelAnimationFrame(waveRAF); waveRAF = null; }
+
+/* ---------- auth ---------- */
+async function tryLogin() {
+  const body = JSON.stringify({ username: $('user').value.trim(), password: $('pass').value });
+  try {
+    const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    if (!res.ok) { $('login-err').textContent = 'ACCESS DENIED — invalid credentials'; return; }
+    const d = await res.json();
+    TOKEN = d.token; sessionStorage.setItem('dg_token', TOKEN);
+    enterApp();
+  } catch (e) { $('login-err').textContent = 'SERVER UNREACHABLE'; }
+}
+
+/* ---------- views ---------- */
+function showView(name) {
+  ['overview', 'dam', 'inspect'].forEach(v => {
+    const el = $('view-' + v);
+    if (v === name) { el.hidden = false; el.classList.remove('view-enter'); void el.offsetWidth; el.classList.add('view-enter'); }
+    else el.hidden = true;
+  });
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.view === name));
+  $('crumb').textContent = name === 'overview' ? 'Network' : name === 'dam' ? 'Intelligence / ' + (currentDam || '—') : 'Inspection';
+  if (name === 'overview' && map) setTimeout(() => map.invalidateSize(), 80);
+}
+
+/* ---------- overview ---------- */
+function kpiHTML(items, animate) {
+  return items.map(([v, l, c, suf], i) =>
+    `<div class="kpi${animate ? ' rise' : ''}" style="animation-delay:${i * 60}ms">
+       <div class="v" data-val="${v}" data-suf="${suf || ''}" style="color:${c}">${animate ? '0' : v + (suf || '')}</div>
+       <div class="l">${l}</div></div>`).join('');
+}
+function runCountUps(scope) { scope.querySelectorAll('.v[data-val]').forEach(el => countUp(el, parseFloat(el.dataset.val), el.dataset.suf)); }
+
+function renderOverview(d, animate) {
+  overviewData = d;
+  const k = d.kpi;
+  $('kpis').innerHTML = kpiHTML([
+    [k.monitored, 'Tracked', '#FFFFFF', ''], [k.critical, 'Critical', '#E74C3C', ''],
+    [k.warning, 'Warning', '#F5A524', ''], [k.safe, 'Safe', '#2ECC71', ''],
+    [k.avg, 'National Avg Storage', '#F5BB00', '%']
+  ], animate);
+  runCountUps($('kpis'));
+
+  const tk = d.dams.slice().sort((a, b) => b.peak - a.peak)
+    .map(x => `<span class="tk"><i class="led ${x.status === 'CRITICAL' ? 'crit' : x.status === 'WARNING' ? 'warn' : 'ok'}"></i>${x.name} <b class="mono">${x.level}%</b> <span class="tk-mut">PEAK ${x.peak}%</span></span>`).join('');
+  const tt = $('ticker-track'); if (tt) tt.innerHTML = tk + tk;
+
+  $('stressed').innerHTML = d.dams.slice().sort((a, b) => b.peak - a.peak).slice(0, 5).map((x, i) => `
+    <div class="st-row" data-dam="${x.name}">
+      <span class="st-rank">${i + 1}.</span>
+      <span class="st-name">${x.name} <span class="muted tiny">${x.state}</span></span>
+      <span class="st-val"><i class="dot-o"></i><b class="mono">${x.peak}%</b></span>
+    </div>`).join('');
+
+  $('alerts').innerHTML = d.alerts.length ? d.alerts.map((a, i) => {
+    const tag = a.breached ? 'BREACH' : a.status;
+    const surgeLine = a.surge > 0 ? ` Cascade inflow +${a.surge}% from ${a.inflow_from.join(', ')}.` : '';
+    const breachLine = a.breached ? ' DAM BREACH SIMULATION ACTIVE — surge routing downstream.' : '';
+    return `<div class="alert-item ${a.breached || a.status === 'CRITICAL' ? 'crit' : 'warn'}${animate ? ' rise' : ''}" style="animation-delay:${i * 50}ms" data-dam="${a.name}">
+      <div class="alert-head"><span class="chip ${tag}">${tag}</span><span class="alert-name">${a.name} — ${a.state}</span></div>
+      <div class="alert-msg">Live ${a.level}% • forecast peak ${a.peak}%.${surgeLine}${breachLine || (a.status === 'CRITICAL' ? ' Spillway release probable within 48h.' : ' Inflow rising; gate operation review advised.')}</div>
+    </div>`;
+  }).join('') : '<div class="alert-msg" style="padding:14px">All monitored reservoirs within safe operating band.</div>';
+
+  $('dam-rows').innerHTML = d.dams.slice().sort((a, b) => b.peak - a.peak).map((r, i) => `
+    <tr data-dam="${r.name}" class="${animate ? 'rise' : ''}" style="animation-delay:${Math.min(i, 20) * 25}ms">
+      <td><strong>${r.name}</strong></td><td class="muted">${r.state}</td><td class="muted">${r.river}</td>
+      <td class="num">${r.level}</td><td class="num">${r.peak}</td>
+      <td class="num" style="color:${r.surge > 0 ? '#F5A524' : 'inherit'}">${r.surge > 0 ? '+' + r.surge : '—'}</td>
+      <td><span class="chip ${r.breached ? 'BREACH' : r.status}">${r.breached ? 'BREACH' : r.status}</span></td></tr>`).join('');
+
+  renderSelector(false);
+  renderMap(d.dams);
+  renderEdges(d.edges || [], d.active_edges || []);
+  document.querySelectorAll('[data-dam]').forEach(el => {
+    if (el._bound) return; el._bound = true;
+    el.addEventListener('click', () => openDam(el.dataset.dam));
+  });
+}
+
+/* ---------- watchlist ---------- */
+function renderSelector(animate) {
+  if (!overviewData) return;
+  const q = ($('dam-search').value || '').toLowerCase();
+  let list = overviewData.dams.filter(d => (d.name + ' ' + d.state).toLowerCase().includes(q));
+  if (LIST_FILTER !== 'ALL') list = list.filter(d => (d.breached ? 'CRITICAL' : d.status) === LIST_FILTER);
+  list.sort((a, b) => b.peak - a.peak);
+  $('dam-list').innerHTML = list.map((d, i) => `
+    <button class="sel-item${animate ? ' rise' : ''}" style="animation-delay:${Math.min(i, 15) * 20}ms" data-dam="${d.name}">
+      <span class="sel-name">${d.name}<br><span class="muted tiny">${d.state}</span></span>
+      <span class="sel-right"><span class="mono tiny">${d.level}%</span><span class="chip ${d.breached ? 'BREACH' : d.status}">${d.breached ? 'B' : d.status[0]}</span></span>
+    </button>`).join('') || '<div class="muted tiny" style="padding:10px 14px">No match.</div>';
+  $('dam-list').querySelectorAll('[data-dam]').forEach(el => el.addEventListener('click', () => openDam(el.dataset.dam)));
+}
+
+/* ---------- map ---------- */
+function renderMap(dams) {
+  if (!map) {
+    map = L.map('map', { zoomControl: true }).setView([22.8, 79.5], 5);
+    setTile('dark');
+    map.on('click', e => spotSelect(e.latlng));
+  }
+  if (markerGroup) map.removeLayer(markerGroup);
+  markerGroup = L.layerGroup().addTo(map);
+  dams.forEach(d => {
+    const cls = d.breached ? 'mk-breach' : d.status === 'CRITICAL' ? 'mk-crit' : d.status === 'WARNING' ? 'mk-warn' : 'mk-safe';
+    const size = d.breached ? 17 : d.status === 'CRITICAL' ? 15 : d.status === 'WARNING' ? 13 : 10;
+    L.marker(d.coords, { icon: L.divIcon({ className: '', html: `<div class="mk ${cls}"></div>`, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }) })
+      .bindPopup(`<b>${d.name} Dam</b><br>Live ${d.level}% • Peak ${d.peak}%<br><b style="color:${STATUS_COLOR[d.breached ? 'BREACH' : d.status]}">${d.breached ? 'BREACH' : d.status}</b>`)
+      .on('popupopen', () => setTimeout(() => openDam(d.name), 10))
+      .addTo(markerGroup);
+  });
+}
+function renderEdges(edges, active) {
+  if (!map) return;
+  if (!edgeGroup) edgeGroup = L.layerGroup().addTo(map);
+  edgeGroup.clearLayers();
+  const coord = {}; overviewData.dams.forEach(d => coord[d.name] = d.coords);
+  const act = new Set(active.map(e => e.join('>')));
+  edges.forEach(([u, d]) => {
+    if (!coord[u] || !coord[d]) return;
+    const isAct = act.has(u + '>' + d);
+    L.polyline([coord[u], coord[d]], {
+      color: isAct ? '#E74C3C' : '#243447', weight: isAct ? 2.5 : 1.2,
+      dashArray: isAct ? '6 10' : '3 7', className: isAct ? 'flowline' : '', opacity: isAct ? 0.95 : 0.55
+    }).addTo(edgeGroup);
+  });
+}
+function setTile(kind) {
+  tileKind = kind;
+  if (tileLayer) map.removeLayer(tileLayer);
+  tileLayer = L.tileLayer(TILES[kind][0], { attribution: TILES[kind][1] }).addTo(map);
+  map.getContainer().classList.toggle('teal', kind === 'dark');
+  $('tile-dark').classList.toggle('active', kind === 'dark');
+  $('tile-sat').classList.toggle('active', kind === 'sat');
+}
+function spotSelect(latlng) {
+  if (!overviewData) return;
+  let best = null, bd = 1e9;
+  overviewData.dams.forEach(d => { const dist = haversine([latlng.lat, latlng.lng], d.coords); if (dist < bd) { bd = dist; best = d; } });
+  if (best && bd <= 250) { toast(`SPOT-SELECT → ${best.name} (${bd.toFixed(0)} km from click)`); openDam(best.name); }
+  else toast('No registered dam within 250 km of click point');
+}
+
+/* ---------- polling ---------- */
+async function loadOverview(animate) {
+  try {
+    const d = await api('/api/overview');
+    const changed = overviewData && JSON.stringify(d.dams.map(x => x.level)) !== JSON.stringify(overviewData.dams.map(x => x.level));
+    renderOverview(d, animate);
+    if (changed && !animate) {
+      document.querySelectorAll('#dam-rows tr').forEach(tr => { tr.classList.remove('flash'); void tr.offsetWidth; tr.classList.add('flash'); });
+      if (d.breached.length) toast('Cascade surge propagating — telemetry refreshed');
+    }
+  } catch (e) { /* silent */ }
+}
+
+/* ---------- dam detail + cascade ---------- */
+async function openDam(name) {
+  currentDam = name;
+  const d = await api('/api/dam/' + encodeURIComponent(name));
+  showView('dam');
+  $('dam-title').textContent = `${d.name} Dam — ${d.state} • ${d.river} River`;
+  $('dam-pill').className = 'chip ' + (d.breached ? 'BREACH' : d.status);
+  $('dam-pill').textContent = d.breached ? 'BREACH' : d.status;
+  $('dam-kpis').innerHTML = kpiHTML([
+    [d.level, 'Current Live Level', '#35C7F0', '%'],
+    [d.peak, '48h Forecast Peak', d.status === 'SAFE' ? '#2ECC71' : '#E74C3C', '%'],
+    [d.surge, 'Cascade Surge', d.surge > 0 ? '#F5A524' : '#9AA5A9', '%'],
+    [d.slope, '24h Inflow Trend', '#F5A524', '%/d']
+  ], true);
+  runCountUps($('dam-kpis'));
+  renderChart(d);
+  renderCascade(d);
+  $('sim-breach').onclick = async () => {
+    await api('/api/sim/breach/' + encodeURIComponent(name), { method: 'POST' });
+    toast('BREACH SIMULATION → ' + name + ' — routing surge downstream');
+    await loadOverview(false); await openDam(name);
+  };
+  $('sim-reset').onclick = async () => {
+    await api('/api/sim/reset', { method: 'POST' });
+    toast('All breach simulations cleared');
+    await loadOverview(false); await openDam(name);
+  };
+}
+function renderCascade(d) {
+  const c = d.cascade || { upstream: [], downstream: [] };
+  const up = c.upstream.length
+    ? c.upstream.map(u => `<span class="chip SAFE">${u.name}</span> <span class="muted tiny">${u.river}</span>`).join(' &nbsp; ')
+    : '<span class="muted small">Head-water reservoir — no upstream dams in registry.</span>';
+  const down = c.downstream.length
+    ? `<table class="tbl"><thead><tr><th>Downstream Dam</th><th>Link</th><th class="r">Hop</th><th class="r">Projected Level</th></tr></thead><tbody>` +
+      c.downstream.map(x => `<tr><td><strong>${x.name}</strong></td><td class="muted">${x.river}</td><td class="num">${x.hop}</td>
+        <td class="num" style="color:${x.projected >= 95 ? '#E74C3C' : x.projected >= 88 ? '#F5A524' : '#2ECC71'}">${x.projected}%</td></tr>`).join('') +
+      '</tbody></table>'
+    : '<span class="muted small">Terminal reservoir — no downstream dams in registry.</span>';
+  const banner = d.breached
+    ? '<div class="verdict crit" style="margin:0 0 12px"><h3 style="color:#E74C3C">Breach simulation active</h3><div class="stats">Surge routing engaged — downstream reservoirs receiving cascade inflow (+22% hop⁻¹, coeff 0.65).</div></div>'
+    : (d.surge > 0 ? `<div class="verdict crit" style="margin:0 0 12px"><h3 style="color:#F5A524">Receiving cascade inflow</h3><div class="stats">+${d.surge}% surge routed from ${d.inflow_from.join(', ')}.</div></div>` : '');
+  $('cascade-body').innerHTML = banner +
+    `<div class="tiny muted" style="letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px">Upstream reservoirs</div>
+     <div style="margin-bottom:14px">${up}</div>
+     <div class="tiny muted" style="letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px">Downstream impact projection (if this dam breaches)</div>${down}`;
+  $('sim-breach').textContent = d.breached ? 'Breach Active' : 'Simulate Breach';
+  $('sim-breach').disabled = !!d.breached;
+}
+function renderChart(d) {
+  const labels = [...d.history.map(h => h.t), ...d.forecast.map(f => f.t)];
+  const obs = [...d.history.map(h => h.v), ...d.forecast.map(() => null)];
+  const fc = [...d.history.map(() => null), d.history[d.history.length - 1].v, ...d.forecast.slice(1).map(f => f.v)];
+  if (chart) chart.destroy();
+  chart = new Chart($('chart'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Observed (Sentinel-1 NDWI)', data: obs, borderColor: '#4A90D9', backgroundColor: 'rgba(74,144,217,.1)', fill: true, pointRadius: 0, borderWidth: 2, tension: .3 },
+      { label: 'ML Forecast', data: fc, borderColor: '#E74C3C', pointRadius: 0, borderWidth: 2, borderDash: [2, 3], tension: .3 },
+      { label: 'FRL Threshold', data: labels.map(() => 95), borderColor: 'rgba(231,76,60,.55)', pointRadius: 0, borderWidth: 1.5, borderDash: [7, 6] }
+    ]},
+    options: {
+      maintainAspectRatio: false,
+      animation: { duration: 950, easing: 'easeOutQuart' },
+      plugins: { legend: { labels: { color: '#9AA5A9', font: { family: 'Roboto', size: 11 } } } },
+      scales: {
+        x: { ticks: { color: '#7b888c', font: { family: 'JetBrains Mono', size: 10 }, maxTicksLimit: 10 }, grid: { color: 'rgba(51,58,61,.6)' } },
+        y: { min: 0, max: 105, ticks: { color: '#7b888c', font: { family: 'JetBrains Mono', size: 10 } }, grid: { color: 'rgba(51,58,61,.6)' } }
+      }
+    }
+  });
+}
+async function downloadReport() {
+  if (!currentDam) return;
+  const res = await fetch('/api/report/' + encodeURIComponent(currentDam), { headers: { 'X-Auth': TOKEN } });
+  const blob = await res.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = currentDam.replace(/ /g, '_') + '_RiskReport.txt';
+  a.click();
+  toast('Risk report exported');
+}
+
+/* ---------- inspection ---------- */
+async function runInspect(file) {
+  const fd = new FormData(); fd.append('file', file);
+  const res = await fetch('/api/inspect', { method: 'POST', headers: { 'X-Auth': TOKEN }, body: fd });
+  const d = await res.json();
+  $('inspect-result').hidden = false;
+  $('img-raw').src = URL.createObjectURL(file);
+  $('img-edge').src = 'data:image/png;base64,' + d.edge_map;
+  $('verdict').className = 'verdict fr-card ' + (d.cracked ? 'crit' : 'ok');
+  $('verdict').innerHTML = `
+    <h3 style="color:${d.cracked ? '#E74C3C' : '#2ECC71'}">${d.cracked ? 'Structural Damage Detected' : 'Structure Intact'}</h3>
+    <div class="stats">Crack probability: ${d.probability}%<br>Edge-density score: ${d.density}% (threshold ${d.threshold}%)</div>
+    <div class="alert-msg" style="margin-top:10px">${d.cracked ? 'ACTION: Dispatch physical inspection team. High seepage / fracture propagation risk on dam face.' : 'ACTION: None. Continue scheduled drone sweeps.'}</div>`;
+  toast(d.cracked ? 'Inference complete — DAMAGE FLAGGED' : 'Inference complete — structure intact');
+}
+
+/* ---------- boot ---------- */
+function startClock() {
+  const tick = () => { $('clock').textContent = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) + ' IST'; };
+  tick(); setInterval(tick, 1000);
+}
+async function enterApp() {
+  stopWaves();
+  $('login').hidden = true; $('app').hidden = false;
+  startClock();
+  showView('overview');
+  await loadOverview(true);
+  pollTimer = setInterval(() => { if (!paused) loadOverview(false); }, 25000);
+}
+document.addEventListener('DOMContentLoaded', async () => {
+  $('signin').addEventListener('click', tryLogin);
+  $('pass').addEventListener('keydown', e => { if (e.key === 'Enter') tryLogin(); });
+  $('signout').addEventListener('click', logout);
+  $('back').addEventListener('click', () => showView('overview'));
+  $('dl-report').addEventListener('click', downloadReport);
+  $('tile-dark').addEventListener('click', () => setTile('dark'));
+  $('tile-sat').addEventListener('click', () => setTile('sat'));
+  $('dam-search').addEventListener('input', () => renderSelector(false));
+  document.querySelectorAll('.nav-btn').forEach(b => b.addEventListener('click', () => {
+    if (b.dataset.view === 'dam' && !currentDam) { toast('Select a dam from the map or watchlist first'); return; }
+    showView(b.dataset.view);
+  }));
+  document.querySelectorAll('.fr-tab').forEach(b => b.addEventListener('click', () => {
+    LIST_FILTER = b.dataset.filter;
+    document.querySelectorAll('.fr-tab').forEach(x => x.classList.toggle('active', x === b));
+    renderSelector(false);
+  }));
+  $('menu-btn').addEventListener('click', () => $('panels-left').classList.toggle('collapsed'));
+  $('tb-tiles').addEventListener('click', () => { setTile(tileKind === 'dark' ? 'sat' : 'dark'); toast('Basemap: ' + (tileKind === 'dark' ? 'Chart' : 'Satellite')); });
+  $('tb-pause').addEventListener('click', () => {
+    paused = !paused;
+    $('tb-pause').classList.toggle('active', paused);
+    $('poll-tag').textContent = paused ? 'PAUSED' : 'POLL 25s';
+    toast(paused ? 'Live polling paused' : 'Live polling resumed');
+  });
+  $('tb-inspect').addEventListener('click', () => showView('inspect'));
+  $('file').addEventListener('change', e => { if (e.target.files[0]) runInspect(e.target.files[0]); });
+  if (TOKEN) { try { await enterApp(); } catch (e) { startWaves(); } }
+  else startWaves();
+});
+
+<<<FILE_END: static/app.js>>>
+
